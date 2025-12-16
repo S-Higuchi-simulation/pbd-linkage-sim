@@ -1,173 +1,239 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <title>PBD Linkage Sim</title>
+    <meta charset="utf-8" />
+    <title>PBD Editor Mode</title>
     <style>
       body {
         margin: 0;
         background: #222;
+        color: white;
+        font-family: sans-serif;
         display: flex;
-        justify-content: center;
+        flex-direction: column;
         align-items: center;
         height: 100vh;
       }
       canvas {
         background: #333;
         box-shadow: 0 0 20px black;
+        cursor: crosshair;
+      }
+      .controls {
+        margin-bottom: 10px;
+        padding: 10px;
+        background: #444;
+        border-radius: 8px;
+      }
+      button {
+        padding: 8px 16px;
+        font-size: 16px;
+        cursor: pointer;
+      }
+      .active {
+        background: cyan;
+        font-weight: bold;
+      }
+      .hints {
+        font-size: 0.9em;
+        color: #ccc;
+        margin-top: 5px;
       }
     </style>
   </head>
   <body>
+    <div class="controls">
+      <button id="btnEdit" class="active">✏️ EDIT</button>
+      <button id="btnSim">▶️ SIMULATE</button>
+      <button
+        id="btnClear"
+        style="margin-left: 20px; background: #ff4444; color: white"
+      >
+        🗑️ CLEAR
+      </button>
+    </div>
+
     <canvas id="simCanvas" width="800" height="600"></canvas>
+
+    <div class="hints">
+      [左クリック]: 点を追加 / 点を選択して接続<br />
+      [右クリック]: 固定/解除切り替え<br />
+      [SIMモード]: マウスでドラッグ
+    </div>
 
     <script src="index.js"></script>
 
     <script>
-      // Wasmの準備ができたら呼ばれる
       Module.onRuntimeInitialized = function () {
-        console.log("Wasm Loaded!");
-
         const canvas = document.getElementById("simCanvas");
         const ctx = canvas.getContext("2d");
-
-        // C++の世界を生成
         const world = new Module.World();
-        // 軌跡を保存する配列
-        const trail = [];
-        const MAX_TRAIL_LENGTH = 300; // 300フレーム分だけ残す
+
+        // 状態管理
+        let mode = "edit"; // 'edit' or 'sim'
+        let selectedIndex = -1; // 接続元として選択された点
         let isDragging = false;
         let draggedPointIndex = -1;
 
-        // マウス座標をCanvas内の座標に変換する便利関数
-        function getMousePos(canvas, evt) {
-          const rect = canvas.getBoundingClientRect();
-          return {
-            x: evt.clientX - rect.left,
-            y: evt.clientY - rect.top,
-          };
+        // ボタン設定
+        const btnEdit = document.getElementById("btnEdit");
+        const btnSim = document.getElementById("btnSim");
+        const btnClear = document.getElementById("btnClear");
+
+        btnEdit.onclick = () => {
+          mode = "edit";
+          updateButtons();
+        };
+        btnSim.onclick = () => {
+          mode = "sim";
+          selectedIndex = -1;
+          updateButtons();
+        };
+        btnClear.onclick = () => {
+          world.clear();
+          selectedIndex = -1;
+        };
+
+        function updateButtons() {
+          btnEdit.className = mode === "edit" ? "active" : "";
+          btnSim.className = mode === "sim" ? "active" : "";
+          // シムモードなら矢印、編集なら十字カーソル
+          canvas.style.cursor = mode === "sim" ? "default" : "crosshair";
         }
 
-        // マウスを押した時
-        canvas.addEventListener("mousedown", (e) => {
-          const pos = getMousePos(canvas, e);
+        function getMousePos(evt) {
+          const rect = canvas.getBoundingClientRect();
+          return { x: evt.clientX - rect.left, y: evt.clientY - rect.top };
+        }
 
-          // 全部の点をチェックして、マウスに近い点を探す
-          // (点は2個しかないのでループでOK)
-          let minDist = 20; // 半径20px以内なら掴めることにする
-          let targetIndex = -1;
-
-          for (let i = 0; i < 2; i++) {
+        function findNearestParticle(x, y, radius = 20) {
+          let minD = radius;
+          let target = -1;
+          const count = world.getParticleCount();
+          for (let i = 0; i < count; i++) {
             const px = world.getParticleX(i);
             const py = world.getParticleY(i);
-            const dx = pos.x - px;
-            const dy = pos.y - py;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-
-            if (dist < minDist) {
-              minDist = dist;
-              targetIndex = i;
+            const d = Math.sqrt((x - px) ** 2 + (y - py) ** 2);
+            if (d < minD) {
+              minD = d;
+              target = i;
             }
           }
+          return target;
+        }
 
-          if (targetIndex !== -1) {
-            isDragging = true;
-            draggedPointIndex = targetIndex;
+        // --- マウス操作 ---
+
+        canvas.addEventListener("mousedown", (e) => {
+          const pos = getMousePos(e);
+          const target = findNearestParticle(pos.x, pos.y);
+
+          if (mode === "edit") {
+            // 右クリック (button 2) は固定切り替え
+            if (e.button === 2) {
+              if (target !== -1) world.toggleFixed(target);
+              return;
+            }
+
+            // 左クリック
+            if (target === -1) {
+              // 何もないところ -> 点を追加
+              world.addParticle(pos.x, pos.y, false); // 固定なしで追加
+              selectedIndex = -1; // 選択解除
+            } else {
+              // 点をクリック
+              if (selectedIndex === -1) {
+                // 1つ目の選択
+                selectedIndex = target;
+              } else {
+                // 2つ目の選択 -> 接続！
+                if (selectedIndex !== target) {
+                  world.addConstraint(selectedIndex, target);
+                  selectedIndex = -1; // 接続完了したら選択解除
+                } else {
+                  selectedIndex = -1; // 自分自身をクリックしたらキャンセル
+                }
+              }
+            }
+          } else if (mode === "sim") {
+            if (target !== -1) {
+              isDragging = true;
+              draggedPointIndex = target;
+            }
           }
         });
 
-        // マウスを動かした時
         canvas.addEventListener("mousemove", (e) => {
-          if (isDragging && draggedPointIndex !== -1) {
-            const pos = getMousePos(canvas, e);
-            // C++に「この点をここに移動させろ」と命令
+          if (mode === "sim" && isDragging) {
+            const pos = getMousePos(e);
             world.setParticlePos(draggedPointIndex, pos.x, pos.y);
           }
         });
 
-        // マウスを離した時
         canvas.addEventListener("mouseup", () => {
           isDragging = false;
           draggedPointIndex = -1;
         });
 
-        // マウスがキャンバス外に出た時も離したことにする
-        canvas.addEventListener("mouseleave", () => {
-          isDragging = false;
-          draggedPointIndex = -1;
-        });
+        // 右クリックメニューを出さないようにする
+        canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+        // --- メインループ ---
         function loop() {
-          world.update();
+          // シミュレートモードの時だけ物理演算を進める
+          if (mode === "sim") {
+            world.update();
+          }
+
+          // 描画
           ctx.clearRect(0, 0, canvas.width, canvas.height);
-          // --- ★追加: 軌跡データの更新 ---
-          // 点2（中間点）の座標を取得
-          const tx = world.getParticleX(2);
-          const ty = world.getParticleY(2);
 
-          // 配列の先頭に追加
-          trail.push({ x: tx, y: ty });
-
-          // 古すぎるデータは捨てる
-          if (trail.length > MAX_TRAIL_LENGTH) {
-            trail.shift();
-          }
-
-          // --- ★追加: 軌跡の描画 ---
-          if (trail.length > 1) {
-            ctx.strokeStyle = "rgba(0, 255, 0, 0.5)"; // 半透明の緑
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(trail[0].x, trail[0].y);
-            for (let i = 1; i < trail.length; i++) {
-              ctx.lineTo(trail[i].x, trail[i].y);
-            }
-            ctx.stroke();
-          }
-          // --- 1. リンク（棒）の描画 ---
-          ctx.strokeStyle = "cyan";
+          // 1. リンク描画
           ctx.lineWidth = 4;
-          const cCount = world.getConstraintCount();
-
+          ctx.strokeStyle = "cyan";
           ctx.beginPath();
+          const cCount = world.getConstraintCount();
           for (let i = 0; i < cCount; i++) {
             const idx1 = world.getConstraintP1(i);
             const idx2 = world.getConstraintP2(i);
-            const x1 = world.getParticleX(idx1);
-            const y1 = world.getParticleY(idx1);
-            const x2 = world.getParticleX(idx2);
-            const y2 = world.getParticleY(idx2);
-
-            ctx.moveTo(x1, y1);
-            ctx.lineTo(x2, y2);
+            ctx.moveTo(world.getParticleX(idx1), world.getParticleY(idx1));
+            ctx.lineTo(world.getParticleX(idx2), world.getParticleY(idx2));
           }
           ctx.stroke();
 
-          // クランクの棒（0-1）は拘束リストに入ってないので手動描画
-          ctx.strokeStyle = "yellow"; // モーター駆動部は黄色！
-          ctx.beginPath();
-          ctx.moveTo(world.getParticleX(0), world.getParticleY(0));
-          ctx.lineTo(world.getParticleX(1), world.getParticleY(1));
-          ctx.stroke();
+          // 編集中の補助線（選択中の点からマウスまで線を引くとかっこいい）
+          // (省略してもいいですが、あると親切です)
 
-          // --- 2. 点の描画 ---
+          // 2. 点描画
           const pCount = world.getParticleCount();
-          ctx.fillStyle = "white";
           for (let i = 0; i < pCount; i++) {
             const x = world.getParticleX(i);
             const y = world.getParticleY(i);
-            ctx.beginPath();
-            ctx.arc(x, y, i === 0 || i === 4 ? 5 : 10, 0, Math.PI * 2); // 固定点は小さく
-            ctx.fill();
-          }
+            const isFixed = world.isParticleFixed(i);
 
-          // --- 3. DOF表示 ---
-          const dof = world.getDOF();
-          ctx.fillStyle = "lime";
-          ctx.font = "24px Arial";
-          ctx.fillText("DOF: " + dof, 20, 40);
+            ctx.beginPath();
+            ctx.arc(x, y, 10, 0, Math.PI * 2);
+
+            // 色分け
+            if (i === selectedIndex) {
+              ctx.fillStyle = "yellow"; // 選択中
+            } else if (isFixed) {
+              ctx.fillStyle = "red"; // 固定点
+            } else {
+              ctx.fillStyle = "white"; // 普通の点
+            }
+            ctx.fill();
+
+            // 選択中は枠線をつける
+            if (i === selectedIndex) {
+              ctx.strokeStyle = "white";
+              ctx.lineWidth = 2;
+              ctx.stroke();
+            }
+          }
 
           requestAnimationFrame(loop);
         }
-
         loop();
       };
     </script>
