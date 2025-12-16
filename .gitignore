@@ -4,3 +4,5 @@
 *.o
 .DS_Store
 node_modules/
+emsdk/
+venv/
