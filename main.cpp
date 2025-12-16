@@ -6,11 +6,10 @@ using namespace emscripten;
 
 // 1. パーティクル（点）
 struct Particle {
-    float x, y;          // 現在位置
-    float old_x, old_y;  // 1フレーム前の位置（速度計算用）
-    float ax, ay;        // 加速度
+    float x, y;
+    float old_x, old_y;
+    float ax, ay;
 
-    // コンストラクタ
     Particle(float startX, float startY) {
         x = old_x = startX;
         y = old_y = startY;
@@ -20,9 +19,9 @@ struct Particle {
 
 // 2. 距離拘束（棒）
 struct DistanceConstraint {
-    int p1_index; // 繋ぐ点の番号
+    int p1_index;
     int p2_index;
-    float length; // 守るべき距離
+    float length;
 
     DistanceConstraint(int idx1, int idx2, float len) 
         : p1_index(idx1), p2_index(idx2), length(len) {}
@@ -33,95 +32,127 @@ class World {
 public:
     std::vector<Particle> particles;
     std::vector<DistanceConstraint> constraints;
-    float gravity = 0.5f;
+    float gravity = 0.0f; // 重力OFF（機構の動きを見るため）
+    float time = 0.0f;
 
     World() {
-        // 初期化：2つの点を作る
-        // 点0: 固定用（空中に浮く）
-        particles.push_back(Particle(400, 100));
-        // 点1: ぶら下がる用
+        // --- 4節リンク機構 (修正版: 正しい構成) ---
+        
+        // 0. 固定点（モーターの回転中心）
+        particles.push_back(Particle(300, 300));
+
+        // 1. クランクの先端（モーターで回される点）
+        particles.push_back(Particle(300 + 50, 300)); // クランク長 50
+
+        // 2. 中間リンクとレバーの接続点
         particles.push_back(Particle(500, 200));
 
-        // 拘束：点0と点1を繋ぐ（距離150くらい）
-        float dist = std::hypot(particles[1].x - particles[0].x, particles[1].y - particles[0].y);
-        constraints.push_back(DistanceConstraint(0, 1, dist));
+        // 3. 固定点（レバーの回転中心）
+        particles.push_back(Particle(550, 400)); 
+
+        // --- 拘束（棒）の追加 ---
+        // ※点0と1はモーター駆動なので棒（距離拘束）は不要
+        
+        // 接続ロッド (1-2)
+        constraints.push_back(DistanceConstraint(1, 2, 200));
+        
+        // 揺動レバー (2-3)
+        constraints.push_back(DistanceConstraint(2, 3, 200));
     }
 
-    // JSから毎フレーム呼ばれる関数
     void update() {
-        // A. 力の適用と移動 (Verlet Integration)
+        time += 0.05f;
+
+        // --- A. モーター制御 ---
+        float crankRadius = 50.0f;
+        float centerX = particles[0].x;
+        float centerY = particles[0].y;
+        
+        // 点1を強制的に回す
+        particles[1].x = centerX + std::cos(time) * crankRadius;
+        particles[1].y = centerY + std::sin(time) * crankRadius;
+        particles[1].old_x = particles[1].x;
+        particles[1].old_y = particles[1].y;
+
+        // --- B. 物理計算 ---
         for (auto& p : particles) {
-            // 固定点（点0）は動かさない特別ルール
-            if (&p == &particles[0]) continue; 
+            // 固定点(0, 3)と、モーター点(1)は物理計算から除外
+            if (&p == &particles[0] || &p == &particles[3] || &p == &particles[1]) continue;
 
             float vx = p.x - p.old_x;
             float vy = p.y - p.old_y;
-
             p.old_x = p.x;
             p.old_y = p.y;
-
-            // 重力を加える
-            p.ay = gravity;
-
-            // 位置更新: x = x + v + a
-            p.x += vx + p.ax;
-            p.y += vy + p.ay;
+            p.x += vx;
+            p.y += vy + gravity;
         }
 
-        // B. 拘束の解決 (PBDの心臓部)
-        // ここを何回も回すと「硬い棒」になる
-        for (int i = 0; i < 5; i++) {
+        // --- C. 拘束解決 ---
+        for (int i = 0; i < 20; i++) { 
             for (auto& c : constraints) {
                 Particle& p1 = particles[c.p1_index];
                 Particle& p2 = particles[c.p2_index];
-
+                
                 float dx = p2.x - p1.x;
                 float dy = p2.y - p1.y;
                 float dist = std::sqrt(dx*dx + dy*dy);
+                if (dist == 0) continue;
                 
-                if (dist == 0) continue; // ゼロ除算防止
-
-                // どれくらいズレてる？ (正なら伸びすぎ、負なら縮みすぎ)
                 float diff = (dist - c.length) / dist;
-
-                // 修正ベクトル（それぞれ半分ずつ寄せる）
                 float moveX = dx * diff * 0.5f;
                 float moveY = dy * diff * 0.5f;
 
-                // 点0は固定なので動かさない
-                // 点1だけ動かす
-                 // (本来は質量に応じて分配しますが、今は簡易実装で点0固定前提)
-                p2.x -= moveX * 2.0f; // 点0が動かない分、点1が全部動く
-                p2.y -= moveY * 2.0f;
+                // 固定点の判定
+                bool p1_fixed = (&p1 == &particles[0] || &p1 == &particles[3] || &p1 == &particles[1]);
+                bool p2_fixed = (&p2 == &particles[0] || &p2 == &particles[3] || &p2 == &particles[1]);
+
+                if (!p1_fixed && !p2_fixed) {
+                    p1.x += moveX; p1.y += moveY;
+                    p2.x -= moveX; p2.y -= moveY;
+                } else if (p1_fixed && !p2_fixed) {
+                    p2.x -= moveX * 2.0f; p2.y -= moveY * 2.0f;
+                } else if (!p1_fixed && p2_fixed) {
+                    p1.x += moveX * 2.0f; p1.y += moveY * 2.0f;
+                }
             }
         }
     }
-    void setParticlePos(int index, float x, float y) {
-        // 範囲チェック（念のため）
-        if (index >= 0 && index < particles.size()) {
-            particles[index].x = x;
-            particles[index].y = y;
-            // 速度をリセットしないと、離した瞬間に吹っ飛ぶのを防ぐため
-            // old_x も更新して「止まっている」ことにするテクニック
-            particles[index].old_x = x; 
-            particles[index].old_y = y;
-            // 加速度もリセット
-            particles[index].ax = 0;
-            particles[index].ay = 0;
-        }
-    }
 
-    // JSにデータを渡すためのゲッター
+    // --- D. 自由度計算 ---
+    int getDOF() {
+        return 1; // 簡易実装
+    }
+    
+    // JS連携用ヘルパー関数
+    int getParticleCount() const { return particles.size(); }
+    int getConstraintCount() const { return constraints.size(); }
+    
+    // ★ここが大事！JSから個別の拘束情報にアクセスするための関数
+    int getConstraintP1(int i) { return constraints[i].p1_index; }
+    int getConstraintP2(int i) { return constraints[i].p2_index; }
+
     float getParticleX(int index) { return particles[index].x; }
     float getParticleY(int index) { return particles[index].y; }
+    
+    void setParticlePos(int index, float x, float y) { 
+        if (index >= 0 && index < particles.size()) {
+            particles[index].x = x; particles[index].y = y;
+            particles[index].old_x = x; particles[index].old_y = y;
+        }
+    }
 };
 
-// Emscriptenへの公開設定 (The Glue)
+// Emscriptenへの公開設定（ここに書き忘れるとエラーになります！）
 EMSCRIPTEN_BINDINGS(my_module) {
     class_<World>("World")
         .constructor<>()
         .function("update", &World::update)
+        .function("getDOF", &World::getDOF)
+        .function("getParticleCount", &World::getParticleCount)
+        .function("getConstraintCount", &World::getConstraintCount)
+        .function("getConstraintP1", &World::getConstraintP1) // ★追加
+        .function("getConstraintP2", &World::getConstraintP2) // ★追加
         .function("getParticleX", &World::getParticleX)
         .function("getParticleY", &World::getParticleY)
-        .function("setParticlePos", &World::setParticlePos); // ★ここを追加！
+        .function("setParticlePos", &World::setParticlePos);
 }
