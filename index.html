@@ -32,6 +32,9 @@
 
         // C++の世界を生成
         const world = new Module.World();
+        // 軌跡を保存する配列
+        const trail = [];
+        const MAX_TRAIL_LENGTH = 300; // 300フレーム分だけ残す
         let isDragging = false;
         let draggedPointIndex = -1;
 
@@ -95,7 +98,30 @@
         function loop() {
           world.update();
           ctx.clearRect(0, 0, canvas.width, canvas.height);
+          // --- ★追加: 軌跡データの更新 ---
+          // 点2（中間点）の座標を取得
+          const tx = world.getParticleX(2);
+          const ty = world.getParticleY(2);
 
+          // 配列の先頭に追加
+          trail.push({ x: tx, y: ty });
+
+          // 古すぎるデータは捨てる
+          if (trail.length > MAX_TRAIL_LENGTH) {
+            trail.shift();
+          }
+
+          // --- ★追加: 軌跡の描画 ---
+          if (trail.length > 1) {
+            ctx.strokeStyle = "rgba(0, 255, 0, 0.5)"; // 半透明の緑
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(trail[0].x, trail[0].y);
+            for (let i = 1; i < trail.length; i++) {
+              ctx.lineTo(trail[i].x, trail[i].y);
+            }
+            ctx.stroke();
+          }
           // --- 1. リンク（棒）の描画 ---
           ctx.strokeStyle = "cyan";
           ctx.lineWidth = 4;
