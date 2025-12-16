@@ -1,0 +1,6 @@
+# .gitignore
+*.wasm
+*.js
+*.o
+.DS_Store
+node_modules/
